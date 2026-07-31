@@ -40,8 +40,6 @@ use crate::pools::PoolConfig;
 #[derive(Debug, Clone, Copy)]
 pub struct ReserveSnapshot {
     pub timestamp: i64,
-    pub base_reserve: f64,
-    pub quote_reserve: f64,
     /// quote per base, e.g. USDC per SOL.
     pub price: f64,
 }
@@ -269,12 +267,7 @@ fn extract_snapshot_from_tx(tx: &TransactionResult, pool: &PoolConfig) -> Option
         return None;
     }
 
-    Some(ReserveSnapshot {
-        timestamp: block_time,
-        base_reserve: base_post,
-        quote_reserve: quote_post,
-        price: quote_delta / base_delta,
-    })
+    Some(ReserveSnapshot { timestamp: block_time, price: quote_delta / base_delta })
 }
 
 /// Find a signature to anchor a `before`-scoped `getSignaturesForAddress`

@@ -22,10 +22,10 @@ const DEFAULT_DEPOSIT_USD: f64 = 10_000.0;
 struct AppState {
     client: reqwest::Client,
     rpc_url: String,
-    // Keyed by (pool id, days, interval_hours) — doc section 5: no
+    // Keyed by (pool id, days, interval_hours, deposit cents) — doc section 5: no
     // persistent DB, results cached in memory for repeated requests to the
-    // same pool/range during a session.
-    cache: Arc<Mutex<HashMap<(String, i64, i64), IlSeriesResponse>>>,
+    // same pool/range/deposit during a session.
+    cache: Arc<Mutex<HashMap<(String, i64, i64, i64), IlSeriesResponse>>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -71,7 +71,8 @@ async fn get_il_series(
     });
     let deposit_usd = params.deposit_usd.unwrap_or(DEFAULT_DEPOSIT_USD);
 
-    let cache_key = (pool.id.to_string(), params.days, interval_hours);
+    let deposit_cents = (deposit_usd * 100.0).round() as i64;
+    let cache_key = (pool.id.to_string(), params.days, interval_hours, deposit_cents);
     if let Some(cached) = state.cache.lock().unwrap().get(&cache_key) {
         return Ok(Json(cached.clone()));
     }

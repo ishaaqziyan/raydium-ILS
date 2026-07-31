@@ -36,7 +36,6 @@ enum CurveState {
 }
 
 pub struct Position {
-    entry_price: f64,
     amount0_entry: f64,
     amount1_entry: f64,
     state: CurveState,
@@ -59,12 +58,7 @@ impl Position {
                 let amount0_entry = initial_value / (2.0 * entry_price);
                 let amount1_entry = initial_value / 2.0;
                 let k = amount0_entry * amount1_entry;
-                Self {
-                    entry_price,
-                    amount0_entry,
-                    amount1_entry,
-                    state: CurveState::ConstantProduct { k },
-                }
+                Self { amount0_entry, amount1_entry, state: CurveState::ConstantProduct { k } }
             }
             Curve::ClmmInRange { price_lower, price_upper } => {
                 assert!(price_lower > 0.0 && price_upper > price_lower, "invalid tick range");
@@ -85,7 +79,6 @@ impl Position {
                 let amount1_entry = liquidity * (sqrt_p0 - sqrt_pa);
 
                 Self {
-                    entry_price,
                     amount0_entry,
                     amount1_entry,
                     state: CurveState::Clmm { liquidity, sqrt_pa, sqrt_pb },
@@ -137,9 +130,6 @@ impl Position {
             .collect()
     }
 
-    pub fn entry_price(&self) -> f64 {
-        self.entry_price
-    }
 }
 
 #[cfg(test)]
