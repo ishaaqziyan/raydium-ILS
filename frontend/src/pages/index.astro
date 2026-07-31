@@ -1,0 +1,156 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+---
+
+<BaseLayout title="Raydium IL Simulator">
+  <main class="mx-auto flex h-screen max-w-4xl flex-col gap-4 overflow-hidden px-6 py-6">
+    <header class="shrink-0 flex flex-col gap-1">
+      <h1 class="text-2xl font-semibold tracking-tight text-white">Raydium Impermanent Loss Simulator</h1>
+      <p class="text-slate-400">
+        Real historical reserve and price data for a Raydium pool, replayed snapshot by snapshot: not a
+        theoretical IL curve.
+      </p>
+    </header>
+
+    <section class="shrink-0 flex flex-wrap items-end gap-4 rounded-lg border border-slate-800 bg-slate-900/60 p-4">
+      <label class="flex flex-col gap-1 text-sm text-slate-300">
+        Pool
+        <select
+          id="pool-select"
+          class="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 focus:border-sky-500 focus:outline-none"
+        >
+        </select>
+      </label>
+
+      <label class="flex flex-col gap-1 text-sm text-slate-300">
+        Range
+        <select
+          id="range-select"
+          class="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 focus:border-sky-500 focus:outline-none"
+        >
+          <option value="7">7 days</option>
+          <option value="30" selected>30 days</option>
+          <option value="90">90 days</option>
+        </select>
+      </label>
+
+      <button
+        id="run-button"
+        class="flex items-center gap-2 rounded-md bg-sky-500 px-4 py-2 font-medium text-slate-950 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        <svg id="run-spinner" class="hidden h-4 w-4 animate-spin text-slate-950" viewBox="0 0 24 24" fill="none">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
+        </svg>
+        <span id="run-button-label">Run simulation</span>
+      </button>
+
+      <span id="status-line" class="text-sm text-slate-400 transition-opacity duration-300"></span>
+    </section>
+
+    <section class="relative min-h-0 flex-1 rounded-lg border border-slate-800 bg-slate-900/60 p-4">
+      <div class="relative h-full w-full">
+        <canvas
+          id="il-chart"
+          class="opacity-0 transition-opacity duration-500 ease-out"
+        ></canvas>
+
+        <div
+          id="chart-loading"
+          class="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-3 opacity-100 transition-opacity duration-300"
+        >
+          <svg class="h-8 w-8 animate-spin text-sky-500" viewBox="0 0 24 24" fill="none">
+            <circle class="opacity-20" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-90" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
+          </svg>
+          <p class="animate-pulse text-sm text-slate-500">Replaying on-chain history…</p>
+        </div>
+      </div>
+    </section>
+
+    <section
+      id="summary-panel"
+      class="shrink-0 flex translate-y-2 flex-col gap-2 rounded-lg border border-slate-800 bg-slate-900/60 p-4 opacity-0 transition-all duration-500 ease-out"
+    >
+      <p id="summary-headline" class="text-lg font-semibold text-white"></p>
+      <p id="summary-detail" class="text-sm text-slate-400 tabular-nums"></p>
+    </section>
+  </main>
+
+  <script>
+    import { fetchIlSeries, type IlSeriesResponse } from "../lib/api";
+    import { populatePoolSelect } from "../lib/poolSelector";
+    import { renderIlChart } from "../lib/chart";
+
+    const poolSelect = document.getElementById("pool-select") as HTMLSelectElement;
+    const rangeSelect = document.getElementById("range-select") as HTMLSelectElement;
+    const runButton = document.getElementById("run-button") as HTMLButtonElement;
+    const runSpinner = document.getElementById("run-spinner") as HTMLElement;
+    const runButtonLabel = document.getElementById("run-button-label") as HTMLSpanElement;
+    const statusLine = document.getElementById("status-line") as HTMLSpanElement;
+    const chartCanvas = document.getElementById("il-chart") as HTMLCanvasElement;
+    const chartLoading = document.getElementById("chart-loading") as HTMLDivElement;
+    const summaryPanel = document.getElementById("summary-panel") as HTMLElement;
+    const summaryHeadline = document.getElementById("summary-headline") as HTMLParagraphElement;
+    const summaryDetail = document.getElementById("summary-detail") as HTMLParagraphElement;
+
+    populatePoolSelect(poolSelect);
+
+    function setStatus(text: string) {
+      statusLine.classList.add("opacity-0");
+      window.setTimeout(() => {
+        statusLine.textContent = text;
+        statusLine.classList.remove("opacity-0");
+      }, 150);
+    }
+
+    function setLoading(loading: boolean) {
+      runButton.disabled = loading;
+      runSpinner.classList.toggle("hidden", !loading);
+      runButtonLabel.textContent = loading ? "Loading…" : "Run simulation";
+      chartLoading.classList.toggle("opacity-100", loading);
+      chartLoading.classList.toggle("opacity-0", !loading);
+      chartCanvas.classList.toggle("opacity-0", loading);
+      chartCanvas.classList.toggle("opacity-100", !loading);
+    }
+
+    function renderSummary(data: IlSeriesResponse) {
+      const last = data.points.at(-1);
+      if (!last) return;
+
+      const direction = last.ilPercent < 0 ? "lost" : "gained";
+      const magnitude = Math.abs(last.ilPercent).toFixed(3);
+
+      summaryHeadline.textContent = `Providing liquidity ${direction} ${magnitude}% versus holding.`;
+      summaryDetail.textContent =
+        `${data.poolLabel} · entry price ${data.entryPrice.toFixed(2)} · ` +
+        `$${data.depositUsd.toLocaleString()} starting deposit · ` +
+        `hold $${last.holdValue.toFixed(2)} vs LP $${last.lpValue.toFixed(2)} today.`;
+
+      summaryPanel.classList.remove("opacity-0", "translate-y-2");
+    }
+
+    async function run() {
+      const poolId = poolSelect.value;
+      const days = Number(rangeSelect.value) as 7 | 30 | 90;
+
+      setLoading(true);
+      summaryPanel.classList.add("opacity-0", "translate-y-2");
+      setStatus("Fetching real on-chain history from Helius — first run for a range can take a few minutes…");
+
+      try {
+        const data = await fetchIlSeries(poolId, days);
+        renderIlChart(chartCanvas, data.points);
+        renderSummary(data);
+        setStatus(`Loaded ${data.points.length} snapshots.`);
+      } catch (err) {
+        setStatus(err instanceof Error ? err.message : "Failed to load IL series.");
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    runButton.addEventListener("click", run);
+    run();
+  </script>
+</BaseLayout>
