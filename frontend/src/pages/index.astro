@@ -155,7 +155,7 @@ import BaseLayout from "../layouts/BaseLayout.astro";
 
       setLoading(true);
       summaryPanel.classList.add("opacity-0", "translate-y-2");
-      setStatus("Fetching real on-chain history from Helius — first run for a range can take a few minutes…");
+      setStatus("Fetching real on-chain history from Helius: first run for a range can take a few minutes…");
 
       try {
         const data = await fetchIlSeries(poolId, days, depositUsd);

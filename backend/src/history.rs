@@ -33,9 +33,20 @@
 use futures::stream::{self, StreamExt};
 use serde::Deserialize;
 use serde_json::json;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::LazyLock;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::sync::Semaphore;
 
 use crate::pools::PoolConfig;
+
+/// Global cap on in-flight Helius requests, regardless of how much
+/// parallelism any call site above `rpc_call` uses — the one choke point
+/// that lets bucket- and candidate-level concurrency scale freely without
+/// blowing past Helius's rate limit.
+static RPC_PERMITS: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(20));
+
+const RPC_MAX_RETRIES: u32 = 4;
+const RPC_RETRY_BASE_DELAY: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, Copy)]
 pub struct ReserveSnapshot {
@@ -125,6 +136,36 @@ struct UiTokenAmount {
     ui_amount: Option<f64>,
 }
 
+/// Send `body` (a single request object or a batch array), gated by the
+/// global permit pool, retrying with backoff on 429/5xx. Callers parse the
+/// body themselves since single vs. batch responses deserialize differently.
+async fn send_with_retry(
+    client: &reqwest::Client,
+    rpc_url: &str,
+    body: &serde_json::Value,
+) -> Result<reqwest::Response, Box<dyn std::error::Error>> {
+    for attempt in 0..=RPC_MAX_RETRIES {
+        // Acquire is scoped inside the loop so a backing-off retry doesn't
+        // hold a permit (and starve other callers) while it sleeps.
+        let _permit = RPC_PERMITS.acquire().await?;
+        let resp = client.post(rpc_url).json(body).send().await?;
+        let status = resp.status();
+
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+            drop(_permit);
+            if attempt == RPC_MAX_RETRIES {
+                return Err(format!("RPC HTTP {status} after {RPC_MAX_RETRIES} retries").into());
+            }
+            tokio::time::sleep(RPC_RETRY_BASE_DELAY * 2u32.pow(attempt)).await;
+            continue;
+        }
+
+        return Ok(resp);
+    }
+
+    unreachable!("loop always returns via the Ok/Err arms above")
+}
+
 async fn rpc_call<T: for<'de> Deserialize<'de>>(
     client: &reqwest::Client,
     rpc_url: &str,
@@ -137,11 +178,12 @@ async fn rpc_call<T: for<'de> Deserialize<'de>>(
         "method": method,
         "params": params,
     });
-    let resp: RpcResponse<T> = client.post(rpc_url).json(&body).send().await?.json().await?;
-    if let Some(err) = resp.error {
+    let resp = send_with_retry(client, rpc_url, &body).await?;
+    let parsed: RpcResponse<T> = resp.json().await?;
+    if let Some(err) = parsed.error {
         return Err(format!("RPC error {}: {}", err.code, err.message).into());
     }
-    resp.result.ok_or_else(|| "RPC response missing result field".into())
+    parsed.result.ok_or_else(|| "RPC response missing result field".into())
 }
 
 /// Pre- and post-transaction balance for a vault, matched by comparing its
@@ -320,14 +362,12 @@ async fn find_reserve_near_slot(
     let candidates: Vec<SignatureInfo> =
         rpc_call(client, rpc_url, "getSignaturesForAddress", params).await.ok()?;
 
-    let mut snapshots = Vec::new();
-    for candidate in candidates {
-        if let Some(tx) = try_get_transaction(client, rpc_url, &candidate.signature).await {
-            if let Some(snap) = extract_snapshot_from_tx(&tx, pool) {
-                snapshots.push(snap);
-            }
-        }
-    }
+    let mut snapshots: Vec<ReserveSnapshot> = stream::iter(candidates)
+        .map(|candidate| async move { try_get_transaction(client, rpc_url, &candidate.signature).await })
+        .buffer_unordered(CANDIDATE_LIMIT as usize)
+        .filter_map(|tx| async move { tx.and_then(|tx| extract_snapshot_from_tx(&tx, pool)) })
+        .collect()
+        .await;
 
     if snapshots.is_empty() {
         return None;
@@ -362,9 +402,10 @@ pub async fn fetch_reserve_history(
 
     // Each bucket is an independent lookup — fan out with bounded
     // concurrency rather than walking targets one at a time, since wall
-    // time here is network round-trip latency, not CPU work. Kept modest
-    // to stay under typical Helius rate limits.
-    const CONCURRENCY: usize = 8;
+    // time here is network round-trip latency, not CPU work. Safe to raise
+    // above the global RPC_PERMITS cap — that semaphore, not this constant,
+    // is what actually bounds in-flight Helius requests.
+    const CONCURRENCY: usize = 16;
 
     let mut snapshots: Vec<ReserveSnapshot> = stream::iter(targets)
         .map(|target_time| async move {

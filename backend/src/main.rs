@@ -18,14 +18,16 @@ use tower_http::cors::CorsLayer;
 
 const DEFAULT_DEPOSIT_USD: f64 = 10_000.0;
 
+/// (pool id, days, interval_hours, deposit cents).
+type CacheKey = (String, i64, i64, i64);
+
 #[derive(Clone)]
 struct AppState {
     client: reqwest::Client,
     rpc_url: String,
-    // Keyed by (pool id, days, interval_hours, deposit cents) — doc section 5: no
-    // persistent DB, results cached in memory for repeated requests to the
-    // same pool/range/deposit during a session.
-    cache: Arc<Mutex<HashMap<(String, i64, i64, i64), IlSeriesResponse>>>,
+    // No persistent DB — doc section 5 — results cached in memory for
+    // repeated requests to the same pool/range/deposit during a session.
+    cache: Arc<Mutex<HashMap<CacheKey, IlSeriesResponse>>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
