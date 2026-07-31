@@ -42,11 +42,13 @@ use crate::pools::PoolConfig;
 /// Global cap on in-flight Helius requests, regardless of how much
 /// parallelism any call site above `rpc_call` uses — the one choke point
 /// that lets bucket- and candidate-level concurrency scale freely without
-/// blowing past Helius's rate limit.
-static RPC_PERMITS: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(20));
+/// blowing past Helius's rate limit. Kept low because this caps
+/// *concurrency*, not requests/sec — fast responses can still burst past a
+/// free-tier RPS cap even at a modest permit count.
+static RPC_PERMITS: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(6));
 
-const RPC_MAX_RETRIES: u32 = 4;
-const RPC_RETRY_BASE_DELAY: Duration = Duration::from_millis(250);
+const RPC_MAX_RETRIES: u32 = 6;
+const RPC_RETRY_BASE_DELAY: Duration = Duration::from_millis(400);
 
 #[derive(Debug, Clone, Copy)]
 pub struct ReserveSnapshot {
