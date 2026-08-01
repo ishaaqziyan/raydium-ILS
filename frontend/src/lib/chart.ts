@@ -79,7 +79,7 @@ export function renderIlChart(canvas: HTMLCanvasElement, points: IlPoint[]): voi
         },
         ilPercent: {
           position: "right",
-          ticks: { color: "#94a3b8", callback: (v) => `${v}%` },
+          ticks: { color: "#94a3b8", callback: (v) => `${Number(v).toFixed(2)}%` },
           grid: { display: false },
         },
       },

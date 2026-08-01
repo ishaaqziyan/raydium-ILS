@@ -16,7 +16,35 @@ const { title } = Astro.props;
     <meta name="generator" content={Astro.generator} />
     <title>{title}</title>
   </head>
-  <body class="h-screen overflow-hidden bg-slate-950 text-slate-100 antialiased">
-    <slot />
+  <body class="h-screen bg-slate-950 text-slate-100 antialiased">
+    <div id="vanta-bg" class="fixed inset-0 z-0"></div>
+    <div class="relative z-10 h-full">
+      <slot />
+    </div>
+
+    <script>
+      import vantaTopologyImport from "vanta/dist/vanta.topology.min";
+      import p5 from "p5";
+
+      // Vite's CJS interop double-wraps this UMD bundle — the real
+      // factory function ends up nested one level deeper than the
+      // declared default export.
+      type Nested = { default: typeof vantaTopologyImport };
+      const TOPOLOGY = (vantaTopologyImport as unknown as Nested).default;
+
+      TOPOLOGY({
+        el: "#vanta-bg",
+        p5,
+        mouseControls: true,
+        touchControls: true,
+        gyroControls: false,
+        minHeight: 200.0,
+        minWidth: 200.0,
+        scale: 1.0,
+        scaleMobile: 1.0,
+        color: 0x38bdf8,
+        backgroundColor: 0x020617,
+      });
+    </script>
   </body>
 </html>
