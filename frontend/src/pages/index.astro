@@ -181,7 +181,18 @@ import BaseLayout from "../layouts/BaseLayout.astro";
       }
     }
 
+    function debounce(fn: () => void, delayMs: number) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      return () => {
+        clearTimeout(timer);
+        timer = setTimeout(fn, delayMs);
+      };
+    }
+
+    const debouncedRun = debounce(run, 400);
+
     runButton.addEventListener("click", run);
+    depositInput.addEventListener("input", debouncedRun);
     run();
   </script>
 </BaseLayout>

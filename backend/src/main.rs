@@ -18,16 +18,19 @@ use tower_http::cors::CorsLayer;
 
 const DEFAULT_DEPOSIT_USD: f64 = 10_000.0;
 
-/// (pool id, days, interval_hours, deposit cents).
-type CacheKey = (String, i64, i64, i64);
+/// (pool id, days, interval_hours) — deposit isn't part of the key since it
+/// only affects the local IL math below, not the on-chain history fetch.
+/// Keeping history cached separately from deposit means changing the
+/// deposit amount recomputes instantly instead of re-hitting Helius.
+type HistoryCacheKey = (String, i64, i64);
 
 #[derive(Clone)]
 struct AppState {
     client: reqwest::Client,
     rpc_url: String,
-    // No persistent DB — doc section 5 — results cached in memory for
-    // repeated requests to the same pool/range/deposit during a session.
-    cache: Arc<Mutex<HashMap<CacheKey, IlSeriesResponse>>>,
+    // No persistent DB — doc section 5 — history cached in memory per
+    // pool/range for repeated requests during a session.
+    history_cache: Arc<Mutex<HashMap<HistoryCacheKey, Arc<Vec<history::ReserveSnapshot>>>>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -73,16 +76,25 @@ async fn get_il_series(
     });
     let deposit_usd = params.deposit_usd.unwrap_or(DEFAULT_DEPOSIT_USD);
 
-    let deposit_cents = (deposit_usd * 100.0).round() as i64;
-    let cache_key = (pool.id.to_string(), params.days, interval_hours, deposit_cents);
-    if let Some(cached) = state.cache.lock().unwrap().get(&cache_key) {
-        return Ok(Json(cached.clone()));
-    }
-
-    let reserve_history =
-        history::fetch_reserve_history(&state.client, &state.rpc_url, pool, params.days, interval_hours)
+    let history_key = (pool.id.to_string(), params.days, interval_hours);
+    let cached_history = state.history_cache.lock().unwrap().get(&history_key).cloned();
+    let reserve_history = match cached_history {
+        Some(history) => history,
+        None => {
+            let fetched = history::fetch_reserve_history(
+                &state.client,
+                &state.rpc_url,
+                pool,
+                params.days,
+                interval_hours,
+            )
             .await
             .map_err(|e| ApiError(StatusCode::BAD_GATEWAY, format!("history fetch failed: {e}")))?;
+            let fetched = Arc::new(fetched);
+            state.history_cache.lock().unwrap().insert(history_key, fetched.clone());
+            fetched
+        }
+    };
 
     let Some(first) = reserve_history.first() else {
         return Err(ApiError(StatusCode::BAD_GATEWAY, "no reserve history found for this range".into()));
@@ -126,7 +138,6 @@ async fn get_il_series(
         points,
     };
 
-    state.cache.lock().unwrap().insert(cache_key, response.clone());
     Ok(Json(response))
 }
 
@@ -138,7 +149,7 @@ async fn main() {
     let state = AppState {
         client: reqwest::Client::new(),
         rpc_url,
-        cache: Arc::new(Mutex::new(HashMap::new())),
+        history_cache: Arc::new(Mutex::new(HashMap::new())),
     };
 
     let app = Router::new()
