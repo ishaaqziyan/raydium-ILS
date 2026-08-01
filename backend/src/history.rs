@@ -34,18 +34,53 @@ use futures::stream::{self, StreamExt};
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::LazyLock;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::sync::Semaphore;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tokio::sync::{Mutex, Semaphore};
 
 use crate::pools::PoolConfig;
 
 /// Global cap on in-flight Helius requests, regardless of how much
-/// parallelism any call site above `rpc_call` uses — the one choke point
-/// that lets bucket- and candidate-level concurrency scale freely without
-/// blowing past Helius's rate limit. Kept low because this caps
-/// *concurrency*, not requests/sec — fast responses can still burst past a
-/// free-tier RPS cap even at a modest permit count.
+/// parallelism any call site above `rpc_call` uses. Rate is bounded
+/// separately by `RATE_LIMITER` below; this just keeps the number of
+/// requests waiting on a response from growing unbounded.
 static RPC_PERMITS: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(6));
+
+/// Helius's free-tier cap is 10 req/s. Paced to 9/s (a hair under) so
+/// requests are spread evenly instead of bursting up to the limit and
+/// drawing 429s — a burst-then-backoff pattern costs far more wall-clock
+/// time than steady pacing, since each 429 pays an exponential retry
+/// delay on top of the request it was going to make anyway.
+static RATE_LIMITER: LazyLock<RateLimiter> =
+    LazyLock::new(|| RateLimiter::new(Duration::from_secs_f64(1.0 / 9.0)));
+
+/// Single-slot leaky bucket: each `wait_turn` call reserves the next
+/// `interval`-spaced slot and sleeps until it arrives. Reservation happens
+/// under the lock; the sleep itself happens after releasing it, so callers
+/// queue for a slot without serializing on each other's wait time.
+struct RateLimiter {
+    interval: Duration,
+    next_slot: Mutex<Instant>,
+}
+
+impl RateLimiter {
+    fn new(interval: Duration) -> Self {
+        Self { interval, next_slot: Mutex::new(Instant::now()) }
+    }
+
+    async fn wait_turn(&self) {
+        let scheduled = {
+            let mut next_slot = self.next_slot.lock().await;
+            let now = Instant::now();
+            let scheduled = (*next_slot).max(now);
+            *next_slot = scheduled + self.interval;
+            scheduled
+        };
+        let now = Instant::now();
+        if scheduled > now {
+            tokio::time::sleep(scheduled - now).await;
+        }
+    }
+}
 
 const RPC_MAX_RETRIES: u32 = 6;
 const RPC_RETRY_BASE_DELAY: Duration = Duration::from_millis(400);
@@ -150,6 +185,7 @@ async fn send_with_retry(
         // Acquire is scoped inside the loop so a backing-off retry doesn't
         // hold a permit (and starve other callers) while it sleeps.
         let _permit = RPC_PERMITS.acquire().await?;
+        RATE_LIMITER.wait_turn().await;
         let resp = client.post(rpc_url).json(body).send().await?;
         let status = resp.status();
 
@@ -356,7 +392,7 @@ async fn find_reserve_near_slot(
     pool: &PoolConfig,
     start_slot: u64,
 ) -> Option<ReserveSnapshot> {
-    const CANDIDATE_LIMIT: u32 = 10;
+    const CANDIDATE_LIMIT: u32 = 4;
 
     let seed = find_seed_signature(client, rpc_url, start_slot).await?;
 

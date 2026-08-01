@@ -18,7 +18,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: backend
-      - run: cargo test --verbose
+      - uses: taiki-e/install-action@nextest
+      - run: cargo nextest run --verbose
 
   frontend-check:
     runs-on: ubuntu-latest
