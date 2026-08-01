@@ -24,6 +24,13 @@ const DEFAULT_DEPOSIT_USD: f64 = 10_000.0;
 /// deposit amount recomputes instantly instead of re-hitting Helius.
 type HistoryCacheKey = (String, i64, i64);
 
+/// Deliberately takes no deposit argument — that's the entire point of the
+/// split. A cache key built from just (pool, days, interval) means any
+/// deposit value looked up right after reuses the same cached history.
+fn history_cache_key(pool_id: &str, days: i64, interval_hours: i64) -> HistoryCacheKey {
+    (pool_id.to_string(), days, interval_hours)
+}
+
 #[derive(Clone)]
 struct AppState {
     client: reqwest::Client,
@@ -76,7 +83,7 @@ async fn get_il_series(
     });
     let deposit_usd = params.deposit_usd.unwrap_or(DEFAULT_DEPOSIT_USD);
 
-    let history_key = (pool.id.to_string(), params.days, interval_hours);
+    let history_key = history_cache_key(pool.id, params.days, interval_hours);
     let cached_history = state.history_cache.lock().unwrap().get(&history_key).cloned();
     let reserve_history = match cached_history {
         Some(history) => history,
@@ -160,4 +167,78 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3001").await.unwrap();
     println!("listening on {}", listener.local_addr().unwrap());
     axum::serve(listener, app).await.unwrap();
+}
+
+#[cfg(test)]
+mod cache_split_tests {
+    use super::*;
+    use history::ReserveSnapshot;
+
+    fn snapshot(price: f64) -> ReserveSnapshot {
+        ReserveSnapshot { timestamp: 0, price }
+    }
+
+    // The cache key function takes no deposit argument at all — this is
+    // the actual enforcement of the split, checked at compile time. These
+    // tests cover the *behavioral* half: that the resulting keys collide
+    // or differ the way callers rely on.
+
+    #[test]
+    fn same_pool_days_interval_produce_identical_key_regardless_of_call_site() {
+        let a = history_cache_key("58oQ...pool", 7, 3);
+        let b = history_cache_key("58oQ...pool", 7, 3);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn different_days_produce_different_keys() {
+        let a = history_cache_key("pool", 7, 3);
+        let b = history_cache_key("pool", 30, 3);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn different_interval_produces_different_keys() {
+        let a = history_cache_key("pool", 7, 3);
+        let b = history_cache_key("pool", 7, 6);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn different_pool_produces_different_keys() {
+        let a = history_cache_key("pool-a", 7, 3);
+        let b = history_cache_key("pool-b", 7, 3);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn cache_hit_on_second_lookup_with_same_key_returns_same_history_without_refetching() {
+        let cache: Arc<Mutex<HashMap<HistoryCacheKey, Arc<Vec<ReserveSnapshot>>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let key = history_cache_key("pool", 7, 3);
+        let history = Arc::new(vec![snapshot(100.0), snapshot(110.0)]);
+
+        cache.lock().unwrap().insert(key.clone(), history.clone());
+
+        // Two independent "requests" with different deposit amounts both
+        // look up the same history_key — deposit was never part of it —
+        // and should both hit the cache and observe the identical Arc
+        // (no clone of the underlying Vec, no refetch).
+        let first_lookup = cache.lock().unwrap().get(&key).cloned();
+        let second_lookup = cache.lock().unwrap().get(&key).cloned();
+
+        let first_lookup = first_lookup.expect("expected cache hit");
+        let second_lookup = second_lookup.expect("expected cache hit");
+        assert!(Arc::ptr_eq(&first_lookup, &second_lookup));
+        assert!(Arc::ptr_eq(&first_lookup, &history));
+    }
+
+    #[test]
+    fn cache_miss_when_key_absent() {
+        let cache: Arc<Mutex<HashMap<HistoryCacheKey, Arc<Vec<ReserveSnapshot>>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let key = history_cache_key("pool", 7, 3);
+
+        assert!(cache.lock().unwrap().get(&key).is_none());
+    }
 }
