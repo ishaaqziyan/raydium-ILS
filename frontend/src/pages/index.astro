@@ -4,13 +4,26 @@ import BaseLayout from "../layouts/BaseLayout.astro";
 
 <BaseLayout title="Raydium IL Simulator">
   <main class="mx-auto flex h-screen max-w-4xl flex-col gap-4 overflow-hidden px-6 py-6">
-    <header class="shrink-0 flex flex-col gap-1">
-      <h1 class="text-2xl font-semibold tracking-tight text-white">Raydium Impermanent Loss Simulator</h1>
-      <p class="text-slate-400">
-        Real historical reserve and price data for a Raydium pool, replayed snapshot by snapshot: not a
-        theoretical IL curve.
-      </p>
-    </header>
+    <div class="relative shrink-0 flex flex-col gap-2">
+      <div class="flex flex-col items-center gap-1 self-end sm:absolute sm:right-0 sm:top-0 sm:flex-row">
+        <span class="text-[10px] uppercase tracking-wide text-slate-500">Powered by</span>
+        <div class="flex items-center gap-2 rounded-full border border-slate-800 bg-slate-900 py-1 pl-3 pr-2">
+          <span class="relative flex h-2 w-2">
+            <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75"></span>
+            <span class="relative inline-flex h-2 w-2 rounded-full bg-emerald-500"></span>
+          </span>
+          <img src="/brand/helius-horizontal-logo.png" alt="Helius" class="h-4 w-auto" />
+        </div>
+      </div>
+
+      <header class="flex flex-col items-center gap-1 text-center">
+        <h1 class="text-2xl font-semibold tracking-tight text-white">Raydium Impermanent Loss Simulator</h1>
+        <p class="text-slate-400">
+          Real historical reserve and price data for a Raydium pool, replayed snapshot by snapshot: <br>
+          not a theoretical IL curve.
+        </p>
+      </header>
+    </div>
 
     <section class="shrink-0 flex flex-wrap items-end gap-4 rounded-lg border border-slate-800 bg-slate-900/60 p-4">
       <label class="flex flex-col gap-1 text-sm text-slate-300">
